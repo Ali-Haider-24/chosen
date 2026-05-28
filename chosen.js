@@ -30,6 +30,12 @@
       options.forEach(option => this.add_option(option, group_position, group.disabled));
     }
 
+    escape_html(text) {
+      const div = document.createElement('div');
+      div.textContent = text == null ? '' : String(text);
+      return div.innerHTML;
+    }
+
     add_option(option, group_position, group_disabled) {
       if (option.nodeName.toUpperCase() === "OPTION") {
         if (option.text !== "") {
@@ -40,7 +46,7 @@
             options_index: this.options_index,
             value: option.value,
             text: option.text,
-            html: option.innerHTML.trim(),
+            html: this.escape_html(option.text).trim(),
             title: option.title ? option.title : undefined,
             selected: option.selected,
             disabled: group_disabled === true ? group_disabled : option.disabled,
@@ -67,14 +73,22 @@
         'data-option-array-index': this.parsed.length,
         'data-value': option.value
       };
+
       if (this.copy_data_attributes && option) {
         Array.from(option.attributes).forEach(attr => {
           const attrName = attr.nodeName;
-          if (/data-.*/.test(attrName)) {
+          const attrNameLower = attrName.toLowerCase();
+
+          if (
+            /^data-[\w:.-]+$/i.test(attrName) &&
+            attrNameLower !== 'data-option-array-index' &&
+            attrNameLower !== 'data-value'
+          ) {
             dataAttr[attrName] = attr.nodeValue;
           }
         });
       }
+
       return dataAttr;
     }
 
@@ -258,13 +272,14 @@
         option_el.style.cssText = option.style;
       }
       for (let attrName in option.data) {
-        if (option.data.hasOwnProperty(attrName)) {
+        if (Object.prototype.hasOwnProperty.call(option.data, attrName)) {
           option_el.setAttribute(attrName, option.data[attrName]);
         }
       }
       option_el.setAttribute("role", "option");
       option_el.innerHTML = option.highlighted_html || option.html;
-      option_el.id = `${this.form_field.id}-chosen-search-result-${option.data['data-option-array-index']}`;
+      const id_prefix = this.search_results_id_prefix || this.form_field.id;
+      option_el.id = `${id_prefix}-chosen-search-result-${option.data['data-option-array-index']}`;
       if (option.title) {
         option_el.title = option.title;
       }
@@ -367,7 +382,7 @@
             search_match = this.search_string_match(this.escape_special_char(text), regex);
             option.search_match = search_match != null;
             if (!option.search_match && this.search_in_values) {
-              option.search_match = this.search_string_match(escape_special_char(option.value), regex);
+              option.search_match = this.search_string_match(this.escape_special_char(option.value), regex);
               match_value = true;
             }
             if (option.search_match && !option.group) {
@@ -523,10 +538,11 @@
     mousedown_checker(evt) {
       evt = evt || window.event;
       let mousedown_type;
-      if (!evt.which && evt.button !== undefined) {
-        evt.which = (evt.button & 1 ? 1 : (evt.button & 2 ? 3 : (evt.button & 4 ? 2 : 0)));
-      }
-      switch (evt.which) {
+      const which = (evt.which == null && evt.button !== undefined)
+        ? (evt.button & 1 ? 1 : (evt.button & 2 ? 3 : (evt.button & 4 ? 2 : 0)))
+        : (evt.which || 0);
+
+      switch (which) {
         case 1:
           mousedown_type = 'left';
           break;
@@ -635,10 +651,41 @@
       if (this.options.width != null) {
         return this.options.width;
       }
+
       if (this.form_field.offsetWidth > 0) {
-        return `${this.form_field.offsetWidth}px`;
+        const select_width = this.form_field.offsetWidth + this.container_width_extra();
+        return `${Math.max(select_width, this.container_min_width())}px`;
       }
+
       return "auto";
+    }
+
+    container_width_extra() {
+      return this.is_multiple ? 8 : 35;
+    }
+
+    container_min_width() {
+      const style = window.getComputedStyle(this.form_field);
+      const font_size = parseFloat(style.fontSize) || 14;
+
+      if (this.has_search_or_create_ui()) {
+        return Math.ceil(font_size * 12);
+      }
+
+      return Math.ceil(font_size * 8);
+    }
+
+    has_search_or_create_ui() {
+      if (this.create_option) {
+        return true;
+      }
+
+      if (this.is_multiple) {
+        return true;
+      }
+
+      return !this.disable_search &&
+        this.form_field.options.length > this.disable_search_threshold;
     }
 
     include_option_in_results(option) {
@@ -672,18 +719,35 @@
 
     search_results_touchend(evt) {
       if (this.touch_started) {
-        this.search_results_mouseup(evt);
+        evt.preventDefault();
+
+        const targetEl = evt.target instanceof Element ? evt.target : null;
+
+        const target = targetEl && (
+          targetEl.classList.contains("active-result") ||
+          targetEl.classList.contains("group-result")
+            ? targetEl
+            : targetEl.closest(".active-result, .group-result")
+        );
+
+        if (target) {
+          this.result_highlight = target;
+          this.result_select(evt);
+          if (this.results_showing) {
+            this.search_field.focus();
+          }
+        }
       }
     }
 
     get_single_html() {
-      return `<a class="chosen-single chosen-default">
+      return `<a class="chosen-single chosen-default" tabindex="0" role="button">
   <span>${this.default_text}</span>
   <div aria-label="Show options"><b aria-hidden="true"></b></div>
 </a>
 <div class="chosen-drop">
   <div class="chosen-search">
-    <input class="chosen-search-input" type="text" autocomplete="off" role="combobox" aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" autocomplete="off" />
+    <input class="chosen-search-input" type="text" autocomplete="off" role="combobox" aria-expanded="false" aria-haspopup="true" aria-autocomplete="list" />
   </div>
   <ul class="chosen-results" role="listbox"></ul>
 </div>`;
@@ -702,38 +766,30 @@
 
     get_no_results_html(terms) {
       return `<li class="no-results">
-  ${this.results_none_found} <span>${this.escape_html(terms)}</span>
+  ${this.escape_html(this.results_none_found)} <span>${this.escape_html(terms)}</span>
 </li>`;
     }
 
-    get_option_html({ value, text }) {
-      return `<option value="${value}" selected>${text}</option>`;
-    }
-
     get_create_option_html(terms) {
-      return `<li class="create-option active-result" role="option"><a>${this.create_option_text}</a> <span>${this.escape_html(terms)}</span></li>`;
+      return `<li class="create-option active-result" role="option"><a>${this.escape_html(this.create_option_text)}</a> <span>${this.escape_html(terms)}</span></li>`;
     }
 
-    static browser_is_supported(options) {
+    static browser_is_supported(options = {}) {
+      if (options.allow_mobile !== false) {
+        return true;
+      }
+
       const userAgent = window.navigator.userAgent;
 
-      const isiOS = /iP(od|hone)/i.test(userAgent);
-      const isAndroid = /Android.*Mobile/i.test(userAgent);
-      const isOtherMobile = /IEMobile/i.test(userAgent) || /Windows Phone/i.test(userAgent) || /BlackBerry/i.test(userAgent) || /BB10/i.test(userAgent);
+      const isMobile =
+        /iP(od|hone|ad)/i.test(userAgent) ||
+        /Android.*Mobile/i.test(userAgent) ||
+        /IEMobile/i.test(userAgent) ||
+        /Windows Phone/i.test(userAgent) ||
+        /BlackBerry/i.test(userAgent) ||
+        /BB10/i.test(userAgent);
 
-      if (options && options.allow_mobile) {
-        if (isiOS || isAndroid) {
-          return true;
-        } else if (isOtherMobile) {
-          return false;
-        }
-      }
-
-      if (isiOS || isAndroid || isOtherMobile) {
-        return false;
-      }
-
-      return true;
+      return !isMobile;
     }
 
     escape_html(text) {
@@ -751,11 +807,15 @@
   AbstractChosen.default_remove_item_text = "Remove selection";
 
   class Chosen extends AbstractChosen {
+    static next_uid = 0;
+
     setup() {
       this.current_selectedIndex = this.form_field.selectedIndex;
     }
 
     set_up_html() {
+      this._a11y_orig_aria_hidden = this.form_field.getAttribute('aria-hidden');
+      this._a11y_orig_tabindex = this.form_field.getAttribute('tabindex');
       let container_classes = ["chosen-container"];
       container_classes.push("chosen-container-" + (this.is_multiple ? "multi" : "single"));
       if (this.inherit_select_classes && this.form_field.className) {
@@ -775,20 +835,20 @@
       for (let prop in container_props) {
         this.container.setAttribute(prop, container_props[prop]);
       }
-      this.container.style.width = this.container_width();
+      this.container.style.setProperty('--chosen-width', this.container_width());
       if (this.is_multiple) {
         this.container.innerHTML = this.get_multi_html();
       } else {
         this.container.innerHTML = this.get_single_html();
       }
-      this.form_field.style.position = 'absolute';
-      this.form_field.style.opacity = 0;
-      this.form_field.style.display = 'none';
+      this.form_field.classList.add('chosen-original-select');
       this.form_field.parentNode.insertBefore(this.container, this.form_field.nextSibling);
       this.dropdown = this.container.querySelector('div.chosen-drop');
+      this.dropdown.setAttribute('aria-hidden', 'true');
       this.search_field = this.container.querySelector('input');
       this.search_results = this.container.querySelector('ul.chosen-results');
-      this.search_results.setAttribute('id', `${this.form_field.id}-chosen-search-results`);
+      this.search_results_id_prefix = this.form_field.id || `chosen-${Chosen.next_uid++}`;
+      this.search_results.setAttribute('id', `${this.search_results_id_prefix}-chosen-search-results`);
       this.search_field_scale();
       if (this.is_multiple) {
         this.search_choices = this.container.querySelector('ul.chosen-choices');
@@ -800,6 +860,8 @@
       this.set_aria_labels();
       this.results_build();
       this.set_tab_index();
+      this.form_field.setAttribute('aria-hidden', 'true');
+      this.form_field.setAttribute('tabindex', '-1');
       this.set_label_behavior();
     }
 
@@ -819,6 +881,7 @@
       this.search_results.addEventListener('mouseup', evt => this.search_results_mouseup(evt));
       this.search_results.addEventListener('mouseover', evt => this.search_results_mouseover(evt));
       this.search_results.addEventListener('mouseout', evt => this.search_results_mouseout(evt));
+      this.search_results.addEventListener('wheel', evt => this.search_results_mousewheel(evt));
       this.search_results.addEventListener('mousewheel', evt => this.search_results_mousewheel(evt));
       this.search_results.addEventListener('DOMMouseScroll', evt => this.search_results_mousewheel(evt));
       this.search_results.addEventListener('touchstart', evt => this.search_results_touchstart(evt));
@@ -855,18 +918,31 @@
       }
       this.container.parentNode.removeChild(this.container);
       delete this.form_field.__chosen_instance;
-      this.form_field.style.display = '';
+      this.form_field.classList.remove('chosen-original-select');
+      if (this._a11y_orig_aria_hidden === null) {
+        this.form_field.removeAttribute('aria-hidden');
+      } else {
+        this.form_field.setAttribute('aria-hidden', this._a11y_orig_aria_hidden);
+      }
+      if (this._a11y_orig_tabindex === null) {
+        this.form_field.removeAttribute('tabindex');
+      } else {
+        this.form_field.setAttribute('tabindex', this._a11y_orig_tabindex);
+      }
     }
 
     set_aria_labels() {
       this.search_field.setAttribute("aria-owns", this.search_results.getAttribute("id"));
+      let accessibleName = "";
+      let labelledbyList = "";
       if (this.form_field.getAttribute("aria-label")) {
-        this.search_field.setAttribute("aria-label", this.form_field.getAttribute("aria-label"));
+        accessibleName = this.form_field.getAttribute("aria-label");
+        this.search_field.setAttribute("aria-label", accessibleName);
         if (this.form_field.getAttribute("aria-labelledby")) {
-          this.search_field.setAttribute("aria-labelledby", this.form_field.getAttribute("aria-labelledby"));
+          labelledbyList = this.form_field.getAttribute("aria-labelledby");
+          this.search_field.setAttribute("aria-labelledby", labelledbyList);
         }
       } else if (this.form_field.labels && this.form_field.labels.length) {
-        let labelledbyList = "";
         for (let i = 0; i < this.form_field.labels.length; i++) {
           let label = this.form_field.labels[i];
           if (label.id === "") {
@@ -874,7 +950,17 @@
           }
           labelledbyList += this.form_field.labels[i].id + " ";
         }
+        labelledbyList = labelledbyList.trim();
         this.search_field.setAttribute("aria-labelledby", labelledbyList);
+        accessibleName = this.form_field.labels[0].textContent.trim();
+      }
+      if (labelledbyList) {
+        this.container.setAttribute("aria-labelledby", labelledbyList);
+      } else if (accessibleName) {
+        this.container.setAttribute("aria-label", accessibleName);
+      }
+      if (accessibleName) {
+        this.search_results.setAttribute("aria-label", accessibleName);
       }
     }
 
@@ -896,30 +982,49 @@
       }
     }
 
+    is_choice_close_target(evt) {
+      return evt &&
+        evt.target instanceof Element &&
+        evt.target.closest(".search-choice-close");
+    }
+
     container_mousedown(evt) {
       if (this.is_disabled) {
         return;
       }
+
       if (evt && this.mousedown_checker(evt) === 'left') {
         if (evt && evt.type === "mousedown" && !this.results_showing) {
           evt.preventDefault();
         }
       }
+
       if (evt && (evt.type === 'mousedown' || evt.type === 'touchstart') && !this.results_showing) {
         evt.preventDefault();
       }
-      if (!((evt != null) && evt.target.classList.contains("search-choice-close"))) {
+
+      if (!this.is_choice_close_target(evt)) {
         if (!this.active_field) {
           if (this.is_multiple) {
             this.search_field.value = "";
           }
-          const rootNode = this.container.getRootNode != null ? this.container.getRootNode() : this.container.ownerDocument;
+
+          const rootNode = this.container.getRootNode != null
+            ? this.container.getRootNode()
+            : this.container.ownerDocument;
+
           rootNode.addEventListener('click', this.click_test_action);
           this.results_show();
+
+        } else if (this.is_multiple && !this.results_showing) {
+          this.search_field.value = "";
+          this.results_show();
+
         } else if (!this.is_multiple && evt && (evt.target === this.selected_item || evt.target.closest("a.chosen-single"))) {
           evt.preventDefault();
           this.results_toggle();
         }
+
         this.activate_field();
       }
     }
@@ -970,11 +1075,7 @@
       const windowHeight = window.innerHeight;
       const dropdownTop = this.container.getBoundingClientRect().top + this.container.offsetHeight - window.pageYOffset;
       const totalHeight = this.dropdown.offsetHeight + dropdownTop;
-      if (totalHeight > windowHeight) {
-        return true;
-      } else {
-        return false;
-      }
+      return totalHeight > windowHeight;
     }
 
     activate_field() {
@@ -1073,6 +1174,7 @@
       if (chosenSingleDiv) {
         chosenSingleDiv.setAttribute("aria-label", "Hide options");
       }
+      this.dropdown.setAttribute("aria-hidden", "false");
       this.results_showing = true;
       this.search_field.setAttribute("aria-expanded", true);
       this.search_field.focus();
@@ -1082,7 +1184,7 @@
       this.form_field.dispatchEvent(event);
     }
 
-    results_hide() {
+    results_hide(options = {}) {
       if (this.results_showing) {
         this.result_clear_highlight();
         this.container.classList.remove("chosen-with-drop");
@@ -1094,22 +1196,36 @@
         const event = new CustomEvent("chosen:hiding_dropdown", { detail: { chosen: this } });
         this.form_field.dispatchEvent(event);
       }
+      if (this.dropdown.contains(document.activeElement) && !options.keep_focus) {
+        document.activeElement.blur();
+      }
+      this.dropdown.setAttribute("aria-hidden", "true");
       this.search_field.setAttribute("aria-expanded", false);
       this.results_showing = false;
     }
 
     set_tab_index() {
-      if (this.form_field.tabIndex) {
-        const ti = this.form_field.tabIndex;
+      const ti = this.form_field.getAttribute('tabindex');
+
+      if (ti != null) {
         this.form_field.tabIndex = -1;
-        this.search_field.tabIndex = ti;
+
+        if (this.is_multiple) {
+          this.search_field.tabIndex = ti;
+        } else {
+          this.selected_item.tabIndex = ti;
+          this.search_field.tabIndex = -1;
+        }
+      } else if (!this.is_multiple) {
+        this.search_field.tabIndex = -1;
       }
     }
 
     set_label_behavior() {
       this.form_field_label = this.form_field.closest("label");
       if (!this.form_field_label && this.form_field.id.length) {
-        this.form_field_label = document.querySelector(`label[for='${this.form_field.id}']`);
+        this.form_field_label = Array.from(document.querySelectorAll("label"))
+          .find(label => label.getAttribute("for") === this.form_field.id);
       }
       if (this.form_field_label) {
         this.form_field_label.addEventListener('click', this.label_click_handler);
@@ -1140,7 +1256,9 @@
         if (target) {
           this.result_highlight = target;
           this.result_select(evt);
-          this.search_field.focus();
+          if (this.results_showing) {
+            this.search_field.focus();
+          }
         }
       }
     }
@@ -1162,7 +1280,6 @@
       const choice = document.createElement('li');
       choice.className = 'search-choice';
       choice.setAttribute('data-value', item.value);
-      choice.setAttribute('role', 'option');
       choice.innerHTML = `<span>${this.choice_label(item)}</span>`;
       if (item.disabled) {
         choice.classList.add('search-choice-disabled');
@@ -1171,6 +1288,7 @@
         close_link.type = 'button';
         close_link.tabIndex = -1;
         close_link.className = 'search-choice-close';
+        close_link.setAttribute('aria-label', AbstractChosen.default_remove_item_text);
         close_link.setAttribute('data-option-array-index', item.data['data-option-array-index']);
 
         const span = document.createElement('span');
@@ -1179,6 +1297,7 @@
         close_link.appendChild(span);
 
         close_link.addEventListener('click', evt => this.choice_destroy_link_click(evt));
+        close_link.addEventListener('touchend', evt => this.choice_destroy_link_click(evt));
         choice.appendChild(close_link);
       }
       if (this.inherit_option_classes && item.classes) {
@@ -1190,8 +1309,15 @@
     choice_destroy_link_click(evt) {
       evt.preventDefault();
       evt.stopPropagation();
+
       if (!this.is_disabled) {
-        this.choice_destroy(evt.target);
+        const close_link = evt.target instanceof Element
+          ? evt.target.closest(".search-choice-close")
+          : null;
+
+        if (close_link) {
+          this.choice_destroy(close_link);
+        }
       }
     }
 
@@ -1249,9 +1375,20 @@
             });
             if (!is_chosen) {
               this.result_highlight = next;
-              evt.target = next;
-              evt.selected = true;
-              this.result_select(evt);
+
+              const groupSelectEvent = {
+                target: next,
+                selected: true,
+                metaKey: evt.metaKey,
+                ctrlKey: evt.ctrlKey,
+                preventDefault: () => {
+                  if (typeof evt.preventDefault === "function") {
+                    evt.preventDefault();
+                  }
+                }
+              };
+
+              this.result_select(groupSelectEvent);
             }
           }
           next = next.nextElementSibling;
@@ -1262,7 +1399,7 @@
         const high = this.result_highlight;
         if (high.classList.contains("create-option")) {
           this.select_create_option(this.search_field.value);
-          this.results_hide();
+          this.results_hide({ keep_focus: !this.is_multiple && evt && evt.type === "keyup" });
           return;
         }
         this.result_clear_highlight();
@@ -1294,7 +1431,7 @@
             this.winnow_results();
           }
         } else {
-          this.results_hide();
+          this.results_hide({ keep_focus: !this.is_multiple && evt && evt.type === "keyup" });
           this.show_search_field_default();
         }
         if (this.is_multiple || this.form_field.selectedIndex !== this.current_selectedIndex) {
@@ -1343,6 +1480,7 @@
         close_button.type = 'button';
         close_button.tabIndex = -1;
         close_button.className = 'search-choice-close';
+        close_button.setAttribute('aria-label', AbstractChosen.default_remove_item_text);
         this.selected_item.querySelector('span').after(close_button);
       }
       this.selected_item.classList.add('chosen-single-with-deselect');
@@ -1393,11 +1531,18 @@
     }
 
     select_append_option(options) {
-      const option = this.get_option_html(options);
-      this.form_field.insertAdjacentHTML('beforeend', option);
+      const option = new Option(
+        options.text == null ? '' : String(options.text),
+        options.value == null ? '' : String(options.value),
+        true,
+        true
+      );
+
+      this.form_field.add(option);
+
       const event = new Event("chosen:updated");
       this.form_field.dispatchEvent(event);
-      const changeEvent = new Event("change");
+      const changeEvent = new Event("change", { bubbles: true });
       this.form_field.dispatchEvent(changeEvent);
       this.search_field.focus();
     }
@@ -1503,31 +1648,61 @@
         width = Math.min(this.container.offsetWidth - 10, width);
       }
 
-      this.search_field.style.width = `${width}px`;
+      this.search_field.style.setProperty('--chosen-search-width', `${width}px`);
     }
 
     trigger_form_field_change(extra) {
       const inputEvent = new Event('input');
-      const changeEvent = new Event('change', extra);
+      const changeEvent = new Event('change', Object.assign({ bubbles: true }, extra || {}));
       this.form_field.dispatchEvent(inputEvent);
       this.form_field.dispatchEvent(changeEvent);
     }
   }
 
   // Attach chosen method to HTMLElement prototype
-  HTMLElement.prototype.chosen = function(options) {
-    if (!AbstractChosen.browser_is_supported(options)) {
-      return this;
-    }
-    if (options === 'destroy') {
-      if (this.__chosen_instance instanceof Chosen) {
-        this.__chosen_instance.destroy();
+  if (typeof HTMLElement !== "undefined") {
+    HTMLElement.prototype.chosen = function(options) {
+      if (!AbstractChosen.browser_is_supported(options)) {
+        return this;
       }
-      return;
+      if (options === 'destroy') {
+        if (this.__chosen_instance instanceof Chosen) {
+          this.__chosen_instance.destroy();
+        }
+        return;
+      }
+      if (!(this.__chosen_instance instanceof Chosen)) {
+        this.__chosen_instance = new Chosen(this, options);
+      }
+    };
+
+    if (typeof window !== "undefined") {
+      const chosenGlobal = window.Chosen || {};
+
+      if (chosenGlobal.init == null) {
+        chosenGlobal.init = function(element, options) {
+          if (!element || typeof element.chosen !== "function") {
+            throw new TypeError("Chosen.init expects an element with a chosen method");
+          }
+
+          element.chosen(options);
+          return element.__chosen_instance || element;
+        };
+      }
+
+      if (chosenGlobal.destroy == null) {
+        chosenGlobal.destroy = function(element) {
+          if (!element || typeof element.chosen !== "function") {
+            throw new TypeError("Chosen.destroy expects an element with a chosen method");
+          }
+
+          element.chosen("destroy");
+          return element;
+        };
+      }
+
+      window.Chosen = chosenGlobal;
     }
-    if (!(this.__chosen_instance instanceof Chosen)) {
-      this.__chosen_instance = new Chosen(this, options);
-    }
-  };
+  }
 
 }).call(this);
