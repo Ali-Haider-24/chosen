@@ -333,7 +333,7 @@
 
     results_toggle() {
       if (this.results_showing) {
-        this.results_hide();
+        this.results_hide({ restore_focus: !this.is_multiple });
       } else {
         this.results_show();
       }
@@ -559,7 +559,11 @@
     }
 
     keydown_checker(evt) {
+      if (this.is_disabled) {
+        return;
+      }
       const stroke = evt.which != null ? evt.which : evt.keyCode;
+      const selectedItemKey = !this.is_multiple && evt.currentTarget === this.selected_item;
       this.search_field_scale();
       if (stroke !== 8 && this.pending_backstroke) {
         this.clear_backstroke();
@@ -569,13 +573,29 @@
           this.backstroke_length = this.get_search_field_value().length;
           break;
         case 9: // tab
+          if (evt.shiftKey && !this.is_multiple) {
+            const previousTabIndex = this.selected_item.getAttribute("tabindex");
+            this.selected_item.tabIndex = -1;
+            this.mouse_on_container = false;
+            if (this.results_showing) {
+              this.results_hide({ keep_focus: true });
+            }
+            setTimeout(() => {
+              if (previousTabIndex == null) {
+                this.selected_item.removeAttribute("tabindex");
+              } else {
+                this.selected_item.setAttribute("tabindex", previousTabIndex);
+              }
+            }, 0);
+            break;
+          }
           if (this.results_showing && !this.is_multiple) {
             this.result_select(evt);
           }
           this.mouse_on_container = false;
           break;
         case 13: // enter
-          if (this.results_showing) {
+          if (this.results_showing || selectedItemKey) {
             evt.preventDefault();
           }
           break;
@@ -585,7 +605,7 @@
           }
           break;
         case 32: // space
-          if (this.disable_search) {
+          if (this.disable_search || selectedItemKey) {
             evt.preventDefault();
           }
           break;
@@ -601,7 +621,11 @@
     }
 
     keyup_checker(evt) {
+      if (this.is_disabled) {
+        return;
+      }
       const stroke = evt.which != null ? evt.which : evt.keyCode;
+      const selectedItemKey = !this.is_multiple && evt.currentTarget === this.selected_item;
       this.search_field_scale();
       switch (stroke) {
         case 8: // backspace
@@ -614,13 +638,27 @@
           break;
         case 13: // enter
           evt.preventDefault();
-          if (this.results_showing) {
+          if (selectedItemKey) {
+            if (!this.results_showing) {
+              this.results_show();
+            }
+          } else if (this.results_showing) {
             this.result_select(evt);
           }
           break;
         case 27: // escape
           if (this.results_showing) {
-            this.results_hide();
+            this.results_hide({ restore_focus: !this.is_multiple });
+          }
+          break;
+        case 32: // space
+          if (selectedItemKey) {
+            evt.preventDefault();
+            if (!this.results_showing) {
+              this.results_show();
+            }
+          } else {
+            this.results_search();
           }
           break;
         case 9:
@@ -741,7 +779,7 @@
     }
 
     get_single_html() {
-      return `<a class="chosen-single chosen-default" tabindex="0" role="button">
+      return `<a class="chosen-single chosen-default" tabindex="0" role="button" aria-expanded="false" aria-haspopup="listbox">
   <span>${this.default_text}</span>
   <div aria-label="Show options"><b aria-hidden="true"></b></div>
 </a>
@@ -903,6 +941,10 @@
       if (this.is_multiple) {
         this.search_choices.addEventListener('click', evt => this.choices_click(evt));
       } else {
+        this.selected_item.addEventListener('focus', this.activate_action);
+        this.selected_item.addEventListener('blur', evt => this.input_blur(evt));
+        this.selected_item.addEventListener('keydown', evt => this.keydown_checker(evt));
+        this.selected_item.addEventListener('keyup', evt => this.keyup_checker(evt));
         this.container.addEventListener('click', evt => evt.preventDefault());
       }
     }
@@ -932,7 +974,13 @@
     }
 
     set_aria_labels() {
-      this.search_field.setAttribute("aria-owns", this.search_results.getAttribute("id"));
+      const resultsId = this.search_results.getAttribute("id");
+      this.search_field.setAttribute("aria-owns", resultsId);
+      this.search_field.setAttribute("aria-controls", resultsId);
+      if (!this.is_multiple && this.selected_item) {
+        this.selected_item.setAttribute("aria-controls", resultsId);
+        this.selected_item.setAttribute("aria-haspopup", "listbox");
+      }
       let accessibleName = "";
       let labelledbyList = "";
       if (this.form_field.getAttribute("aria-label")) {
@@ -962,6 +1010,17 @@
       if (accessibleName) {
         this.search_results.setAttribute("aria-label", accessibleName);
       }
+      this.set_expanded(false);
+    }
+
+    set_expanded(expanded) {
+      const value = expanded ? "true" : "false";
+      if (this.search_field) {
+        this.search_field.setAttribute("aria-expanded", value);
+      }
+      if (!this.is_multiple && this.selected_item) {
+        this.selected_item.setAttribute("aria-expanded", value);
+      }
     }
 
     search_field_disabled() {
@@ -969,16 +1028,10 @@
       if (this.is_disabled) {
         this.container.classList.add('chosen-disabled');
         this.search_field.disabled = true;
-        if (!this.is_multiple) {
-          this.selected_item.removeEventListener('focus', this.activate_field);
-        }
         this.close_field();
       } else {
         this.container.classList.remove('chosen-disabled');
         this.search_field.disabled = false;
-        if (!this.is_multiple) {
-          this.selected_item.addEventListener('focus', this.activate_field.bind(this));
-        }
       }
     }
 
@@ -1062,7 +1115,6 @@
       rootNode.removeEventListener("click", this.click_test_action);
       this.active_field = false;
       this.results_hide();
-      this.search_field.setAttribute("aria-expanded", false);
       this.container.classList.remove("chosen-container-active");
       this.container.classList.remove("chosen-dropup");
       this.clear_backstroke();
@@ -1078,7 +1130,7 @@
       return totalHeight > windowHeight;
     }
 
-    activate_field() {
+    activate_field(evt) {
       if (this.is_disabled) {
         return;
       }
@@ -1089,7 +1141,9 @@
       this.active_field = true;
       this.search_field.value = this.search_field.value;
       this.search_results.setAttribute("aria-busy", false);
-      this.search_field.focus();
+      if (!evt || evt.target !== this.selected_item) {
+        this.search_field.focus();
+      }
     }
 
     test_active_click(evt) {
@@ -1122,6 +1176,7 @@
       this.search_field_disabled();
       this.show_search_field_default();
       this.search_field_scale();
+      this.set_expanded(this.results_showing);
       this.parsing = false;
     }
 
@@ -1176,7 +1231,7 @@
       }
       this.dropdown.setAttribute("aria-hidden", "false");
       this.results_showing = true;
-      this.search_field.setAttribute("aria-expanded", true);
+      this.set_expanded(true);
       this.search_field.focus();
       this.search_field.value = this.get_search_field_value();
       this.winnow_results();
@@ -1185,6 +1240,7 @@
     }
 
     results_hide(options = {}) {
+      const shouldRestoreFocus = !this.is_multiple && options.restore_focus && !options.keep_focus && this.selected_item;
       if (this.results_showing) {
         this.result_clear_highlight();
         this.container.classList.remove("chosen-with-drop");
@@ -1200,8 +1256,11 @@
         document.activeElement.blur();
       }
       this.dropdown.setAttribute("aria-hidden", "true");
-      this.search_field.setAttribute("aria-expanded", false);
+      this.set_expanded(false);
       this.results_showing = false;
+      if (shouldRestoreFocus && document.activeElement !== this.selected_item) {
+        this.selected_item.focus();
+      }
     }
 
     set_tab_index() {
@@ -1345,7 +1404,7 @@
       this.results_reset_cleanup();
       this.trigger_form_field_change();
       if (this.active_field) {
-        this.results_hide();
+        this.results_hide({ restore_focus: !this.is_multiple });
       }
     }
 
@@ -1431,7 +1490,10 @@
             this.winnow_results();
           }
         } else {
-          this.results_hide({ keep_focus: !this.is_multiple && evt && evt.type === "keyup" });
+          this.results_hide({
+            keep_focus: !this.is_multiple && evt && evt.type === "keyup",
+            restore_focus: !this.is_multiple
+          });
           this.show_search_field_default();
         }
         if (this.is_multiple || this.form_field.selectedIndex !== this.current_selectedIndex) {
